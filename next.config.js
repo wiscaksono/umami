@@ -30,6 +30,7 @@ const headers = [
     key: 'X-DNS-Prefetch-Control',
     value: 'on',
   },
+  { key: 'Access-Control-Allow-Origin', value: '*' },
   {
     key: 'Content-Security-Policy',
     value: contentSecurityPolicy
