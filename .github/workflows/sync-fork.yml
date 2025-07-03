@@ -9,25 +9,23 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          fetch-depth: 0
+          token: ${{ secrets.PERSONAL_TOKEN }}
 
       - name: Set up Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Add upstream
+      - name: Add upstream remote
         run: git remote add upstream https://github.com/umami-software/umami.git
 
-      - name: Fetch upstream
-        run: git fetch upstream
-
-      - name: Rebase
-        run: git rebase upstream/master
-
-      - name: Push changes
-        env:
-          GH_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
-        run: git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git master --force
+      - name: Sync fork
+        run: |
+          git fetch upstream
+          git checkout master
+          git merge upstream/master
+          git push origin master
