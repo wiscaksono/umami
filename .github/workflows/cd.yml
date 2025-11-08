@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Optional image version (e.g. 3.0.0, beta)'
+        description: 'Optional image version (e.g. 3.0.0, v3.0.0, or 3.0.0-beta.1)'
         required: false
         default: ''
 
@@ -18,16 +18,19 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
 
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Log into GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log into Docker Hub
         if: github.repository == 'umami-software/umami'
@@ -37,65 +40,53 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Log into GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Normalize manual input if provided
-      - name: Normalize manual version
-        id: normalize
+      - name: Compute version tags
+        id: compute
         run: |
           INPUT="${{ github.event.inputs.version }}"
+          REF_TYPE="${{ github.ref_type }}"
+          REF_NAME="${{ github.ref_name }}"
+
+          # Determine version source
           if [[ -n "$INPUT" ]]; then
-            # Strip leading v if present
             VERSION="${INPUT#v}"
-            MAJOR=$(echo "$VERSION" | cut -d. -f1)
-            MINOR=$(echo "$VERSION" | cut -d. -f2)
-            echo "version_tags=${VERSION},${MAJOR}.${MINOR},${MAJOR}" >> $GITHUB_ENV
+          elif [[ "$REF_TYPE" == "tag" ]]; then
+            VERSION="${REF_NAME#v}"
           else
-            echo "version_tags=" >> $GITHUB_ENV
+            VERSION=""
           fi
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            umamisoftware/umami,enable=${{ github.repository == 'umami-software/umami' }}
-            ghcr.io/${{ github.repository }}
-          flavor: |
-            latest=auto
-          tags: |
-            # Semver tags from real Git tags
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
+          TAGS=""
 
-            # Manual input derived tags
-            type=raw,value=${{ env.version_tags }},enable=${{ env.version_tags != '' }}
+          if [[ -n "$VERSION" ]]; then
+            MAJOR=$(echo "$VERSION" | cut -d. -f1)
+            MINOR=$(echo "$VERSION" | cut -d. -f2)
 
-            # Fallbacks for branches/PRs
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha
+            if [[ "$VERSION" == *-* ]]; then
+              # prerelease: only version tag
+              TAGS="$VERSION"
+            else
+              # stable release: version + hierarchy + latest
+              TAGS="$VERSION,${MAJOR}.${MINOR},${MAJOR},postgresql-latest,latest"
+            fi
+          else
+            # Non-tag build (e.g. from main branch)
+            TAGS="${REF_NAME}"
+          fi
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "Computed tags: $TAGS"
 
       - name: Build and push Docker image
-        id: build-and-push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Sign the published Docker image
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-          DIGEST: ${{ steps.build-and-push.outputs.digest }}
-        run: echo "${TAGS}" | xargs -I {} cosign sign --yes "{}@${DIGEST}"
+          provenance: false
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.compute.outputs.tags }}
+            ${{ github.repository == 'umami-software/umami' && format('umamisoftware/umami:{0}', steps.compute.outputs.tags) || '' }}
